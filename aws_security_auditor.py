@@ -23,17 +23,20 @@ def check_ebs_encryption(volume_response):
         return "WARNING"
 
 def check_security_group(security_group_response):
+    warnings = []
     ip_permissions = security_group_response["SecurityGroups"][0]["IpPermissions"]
     if not ip_permissions:
-        return "No inbound rules are configured"
+        return warnings
     for permissions in ip_permissions:
         port = permissions.get("FromPort")
         if permissions.get("IpRanges"):
             for ip_range in permissions["IpRanges"]:
                 cidr = ip_range.get("CidrIp")
                 if port == 22 and cidr == "0.0.0.0/0":
-                    return "WARNING: SSH open to the internet"
-    return "PASS"
+                    warnings.append("WARNING: SSH open to the internet")
+                if port == 3389 and cidr == "0.0.0.0/0":
+                    warnings.append("WARNING: RDP open to the internet")
+    return warnings
 def create_finding(resource_id, check, severity, status, message):
     finding = {
         "resource_id": resource_id,
@@ -151,6 +154,7 @@ def list_instances():
             else:
                 ebs_status = "Unexpected error"
             security_group_results = []
+            security_group_check_completed = False
             for security_group in instance["SecurityGroups"]:
                 if security_group.get("GroupId"):
                     try:
@@ -158,7 +162,8 @@ def list_instances():
                         security_group_response = ec2.describe_security_groups(
                                 GroupIds = [security_group_id]
                             )
-                        security_group_results.append(check_security_group(security_group_response))
+                        security_group_check_completed = True
+                        security_group_results.extend(check_security_group(security_group_response))
                     except Exception as error:
                         error_info ={
                             "resource_id": instance["InstanceId"],
@@ -171,10 +176,13 @@ def list_instances():
             if "WARNING: SSH open to the internet" in security_group_results:
                 result = create_finding(instance["InstanceId"], "Security Group", "HIGH", "WARNING", "SSH Open to the internet")
                 findings.append(result)
-            if not security_group_results:
+            if "WARNING: RDP open to the internet" in security_group_results:
+                result = create_finding(instance["InstanceId"], "Security Group", "HIGH", "WARNING", "RDP Open to the internet")
+                findings.append(result)
+            if not security_group_check_completed:
                 security_group_status = "NOT CHECKED"
-            elif "WARNING: SSH open to the internet" in security_group_results:
-                security_group_status = "WARNING"
+            elif security_group_results:
+                security_group_status= "WARNING"
             else:
                 security_group_status = "PASS"
             
